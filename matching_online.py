@@ -222,7 +222,7 @@ for iter_idx in range(num_iters):
     #    x_1 = QPFunction(verbose=False, solver=QPSolvers.GUROBI)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
     #    x = QPFunction(verbose=False, solver=QPSolvers.GUROBI)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
         # x = QPFunction(verbose=False, solver=QPSolvers.GUROBI, model_params=model_params)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
-        x = QPFunction(verbose=False, solver=QPSolvers.ONLINE, model_params=model_params)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
+        x = QPFunction(verbose=False, solver=QPSolvers.GUROBI, model_params=model_params)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
     #    return x
         loss = (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
 
@@ -262,12 +262,53 @@ for iter_idx in range(num_iters):
         loss = (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
         return loss
 
+    def get_loss_online(net, data, c_true, model_params, Q, G, h, eval_mode = True):
+        if eval_mode:
+            net.eval()
+        c_pred = -nn.Sigmoid()(net(data))
+        if c_pred.dim() == 3:
+            n_train = data.shape[0]
+        else:
+            n_train = 1
+        c_pred = c_pred.squeeze()
+        x = QPFunction(verbose=False, solver=QPSolvers.ONLINE, model_params=model_params)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
+        loss = (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
+
+        net.train()
+        return loss
+
+    def get_loss_prop(net, data, c_true, model_params, Q, G, h, eval_mode = True):
+        if eval_mode:
+            net.eval()
+        c_pred = -nn.Sigmoid()(net(data))
+        if c_pred.dim() == 3:
+            n_train = data.shape[0]
+        else:
+            n_train = 1
+        c_pred = c_pred.squeeze()
+        x = QPFunction(verbose=False, solver=QPSolvers.PROP, model_params=model_params)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
+        loss = (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
+
+        net.train()
+        return loss
+
     def get_loss_opt_online(c_true):
         from online import online_matching
         x = torch.Tensor(c_true.shape[0], c_true.shape[1])
+        n = 50
         i = 0
         for graph in c_true:
-            x[i] = torch.Tensor(online_matching(graph.view(50, 50), 50))
+            x[i] = torch.Tensor(online_matching(graph.view(n, n).detach().numpy().copy(), n)[0])
+            i += 1
+        return (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
+
+    def get_loss_opt_prop(c_true, iters=10):
+        from online import prop_alloc
+        x = torch.Tensor(c_true.shape[0], c_true.shape[1])
+        n = 50
+        i = 0
+        for graph in c_true:
+            x[i] = torch.Tensor(prop_alloc(graph.view(n, n).detach().numpy().copy(), n, iters, 0.1, 0.2)[0])
             i += 1
         return (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
 
@@ -285,17 +326,18 @@ for iter_idx in range(num_iters):
     print(loss_opt.item())
     optimum.append(loss_opt.item())
 #    continue
-    print(get_loss_opt_online(Ps[test]).item())
+    print('online opt:', get_loss_opt_online(Ps[test]).item())
+    print('prop alloc:', get_loss_opt_prop(Ps[test]).item())
     
     loss_ts = get_loss(net_two_stage, data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b)
     #print('two stage', loss_ts)
     loss_random = get_loss_random(data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b)
     optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
-    for epoch in range(2):  # 12
+    for epoch in range(12):  # 12
         print(epoch)
         random.shuffle(train)
         for i in train:
-            loss = -get_loss(net, data[[i]], Ps[[i]], model_params_quad, gamma*torch.eye(A.shape[1]), A, b, eval_mode=False)
+            loss = -get_loss_prop(net, data[[i]], Ps[[i]], model_params_quad, gamma*torch.eye(A.shape[1]), A, b, eval_mode=False)
 #            print(loss)
             optimizer.zero_grad()
             loss.backward()

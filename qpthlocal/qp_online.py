@@ -73,30 +73,19 @@ def forward_gurobi_prebuilt(Q, p, model, x, inequality_constraints, equality_con
     return model.ObjVal, x_opt, nu, lam, slacks
 
 def forward_online_matching(Q, p, model, x, inequality_constraints, equality_constraints, quadobj):
-    import gurobipy as gp
+    from online import online_matching
     import numpy as np
-    obj = gp.QuadExpr()
-    obj += quadobj
-    for i in range(len(p)):
-        obj += p[i] * x[i]
-    model.setObjective(obj, gp.GRB.MINIMIZE)
-    model.optimize()
-    x_opt = np.array([x[i].x for i in range(len(x))])
-    lam = np.array([inequality_constraints[i].pi for i in range(len(inequality_constraints))])
-
-    # x_opt, lam = forward_online_matching_working()
+    n = 50
+    x_opt, alphas, betas = online_matching(p.reshape(n, n), n)
+    lam = np.concatenate([alphas, betas])
     return x_opt, lam
 
-# def forward_online_matching_working(p):
-#     n = 50
-#     matches = np.zeros((n, n))
-#     alphas = np.zeros(n)
-#     betas = np.zeros(n)
-#     for v in range(n):
-#         # take each vertex as they arrive online
-#         r[]
-#         pass
-#     pass
+def forward_prop_alloc(p):
+    from online import prop_alloc
+    import numpy as np
+    n = 50
+    x_opt, gammas = prop_alloc(p.reshape(n, n), n, 10, 0.1, 0.2)
+    return x_opt, gammas
 
 
 class QPSolvers(Enum):
@@ -105,6 +94,7 @@ class QPSolvers(Enum):
     GUROBI = 3
     CUSTOM = 4
     ONLINE = 5
+    PROP = 6
 
 
 class QPFunction(Function):
@@ -262,6 +252,7 @@ class QPFunction(Function):
             self.nus = nus
             self.slacks = slacks
         elif self.solver == QPSolvers.ONLINE:
+            p = -p
             vals = torch.Tensor(nBatch).type_as(Q)  # not really necessary
             zhats = torch.Tensor(nBatch, self.nz).type_as(Q)
             lams = torch.Tensor(nBatch, self.nineq).type_as(Q)
@@ -284,17 +275,38 @@ class QPFunction(Function):
                 Gi = G[i].detach().numpy() if G is not None else None
                 hi = h[i].detach().numpy() if h is not None else None
                 zhati, lami = forward_online_matching(
-                        Q[i].detach().numpy(), p[i].detach().numpy(), self.model, self.x, self.inequality_constraints, 
+                        Q[i].detach().numpy(), p[i].detach().numpy(), self.model,
+                        self.x, self.inequality_constraints, 
                         self.equality_constraints, self.quadobj)
                 zhats[i] = torch.Tensor(zhati)
-                lams[i] = torch.Tensor(lami)
+                lams[i] = torch.cat((torch.Tensor(lami), torch.zeros(self.nineq - len(lami))))
                 slacks[i] = torch.Tensor(-(Gi@zhati - hi))
 
             self.vals = vals
             self.lams = lams
             self.nus = nus
             self.slacks = slacks
+        elif self.solver == QPSolvers.PROP:
+            p = -p 
+            zhats = torch.Tensor(nBatch, self.nz).type_as(Q)
+            lams = torch.Tensor(nBatch, self.nineq).type_as(Q)
+            if self.neq > 0:
+                nus = torch.Tensor(nBatch, self.neq).type_as(Q)
+            else:
+                nus = torch.Tensor().type_as(Q)
+            slacks = torch.Tensor(nBatch, self.nineq).type_as(Q)
+            for i in range(nBatch):
+                Gi = G[i].detach().numpy() if G is not None else None
+                hi = h[i].detach().numpy() if h is not None else None
+                zhati, lami = forward_prop_alloc(p[i].detach().numpy())
+                zhats[i] = torch.Tensor(zhati)
+                lams[i] = torch.cat((torch.Tensor(lami), torch.zeros(self.nineq - len(lami))))
+                slacks[i] = torch.Tensor(-(Gi@zhati - hi))
 
+            self.vals = torch.Tensor(nBatch).type_as(Q)
+            self.lams = lams
+            self.nus = nus
+            self.slacks = slacks
         else:
             assert False
 
