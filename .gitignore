@@ -2,4 +2,6 @@
 *.pyc
 *.whl
 *.pickle
+*.swp
 env/
+test.py

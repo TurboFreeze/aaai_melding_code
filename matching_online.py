@@ -227,7 +227,7 @@ for iter_idx in range(num_iters):
         loss = (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
 
         net.train()
-        return loss
+        return -loss, x
     
     def get_loss_random(data, c_true, model_params, Q, G, h):
         c_pred = -torch.rand_like(c_true)
@@ -280,17 +280,25 @@ for iter_idx in range(num_iters):
     def get_loss_prop(net, data, c_true, model_params, Q, G, h, eval_mode = True):
         if eval_mode:
             net.eval()
-        c_pred = -nn.Sigmoid()(net(data))
+        c_pred = nn.Sigmoid()(net(data))
         if c_pred.dim() == 3:
             n_train = data.shape[0]
         else:
             n_train = 1
         c_pred = c_pred.squeeze()
-        x = QPFunction(verbose=False, solver=QPSolvers.PROP, model_params=model_params)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
+
+        x = torch.Tensor(n_train, c_pred.shape[0])
+        # x = QPFunction(verbose=False, solver=QPSolvers.PROP, model_params=model_params)(Q.expand(n_train, *Q.shape), c_pred, G.expand(n_train, *G.shape), h.expand(n_train, *h.shape), torch.Tensor(), torch.Tensor())
+        from online import prop_alloc_auto
+        i = 0
+        for i in range(n_train):
+            x[i] = prop_alloc_auto(c_pred.view(50, 50), 50, 3, 0.1, 0.2)
+        # if eval_mode:
+        #     x = torch.round(x)
         loss = (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
 
         net.train()
-        return loss
+        return -loss, x
 
     def get_loss_opt_online(c_true):
         from online import online_matching
@@ -303,12 +311,12 @@ for iter_idx in range(num_iters):
         return (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
 
     def get_loss_opt_prop(c_true, iters=10):
-        from online import prop_alloc
+        from online import prop_alloc, prop_alloc_auto
         x = torch.Tensor(c_true.shape[0], c_true.shape[1])
         n = 50
         i = 0
         for graph in c_true:
-            x[i] = torch.Tensor(prop_alloc(graph.view(n, n).detach().numpy().copy(), n, iters, 0.1, 0.2)[0])
+            x[i] = torch.tensor(prop_alloc(graph.view(n, n).detach().numpy().copy(), n, iters, 0.1, 0.2)[0])
             i += 1
         return (c_true.view(c_true.shape[0], 1, c_true.shape[1])@x.view(*x.shape, 1)).mean()
 
@@ -329,23 +337,25 @@ for iter_idx in range(num_iters):
     print('online opt:', get_loss_opt_online(Ps[test]).item())
     print('prop alloc:', get_loss_opt_prop(Ps[test]).item())
     
-    loss_ts = get_loss(net_two_stage, data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b)
+    loss_ts = get_loss(net_two_stage, data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b)[0]
     #print('two stage', loss_ts)
     loss_random = get_loss_random(data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b)
-    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-3)
     for epoch in range(12):  # 12
         print(epoch)
         random.shuffle(train)
         for i in train:
-            loss = -get_loss_prop(net, data[[i]], Ps[[i]], model_params_quad, gamma*torch.eye(A.shape[1]), A, b, eval_mode=False)
-#            print(loss)
+            loss, x = get_loss(net, data[[i]], Ps[[i]], model_params_quad, gamma*torch.eye(A.shape[1]), A, b, eval_mode=False)
+            print(loss)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
         gamma *= 0.8
         print(gamma)
-    loss_diffopt = get_loss(net, data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b)
+    loss_diffopt = get_loss(net, data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b)[0]
+
     print(epoch, 'test', loss_diffopt)
+    print('online eval:', get_loss_prop(net, data[[i]], Ps[[i]], model_params_quad, gamma*torch.eye(A.shape[1]), A, b)[0])#get_loss_prop(net, data[test], Ps[test], model_params_linear, torch.zeros(A.shape[1], A.shape[1]), A, b))
     
     print(iter_idx)
     opt['ce'][iter_idx] = loss_ts.item()

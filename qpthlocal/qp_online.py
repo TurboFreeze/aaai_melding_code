@@ -81,10 +81,10 @@ def forward_online_matching(Q, p, model, x, inequality_constraints, equality_con
     return x_opt, lam
 
 def forward_prop_alloc(p):
-    from online import prop_alloc
+    from online import prop_alloc, prop_alloc_auto, prop_alloc_combined
     import numpy as np
     n = 50
-    x_opt, gammas = prop_alloc(p.reshape(n, n), n, 10, 0.1, 0.2)
+    x_opt, gammas = prop_alloc_combined(p.view(n, n), n, 10, 0.1, 0.2)
     return x_opt, gammas
 
 
@@ -298,10 +298,11 @@ class QPFunction(Function):
             for i in range(nBatch):
                 Gi = G[i].detach().numpy() if G is not None else None
                 hi = h[i].detach().numpy() if h is not None else None
-                zhati, lami = forward_prop_alloc(p[i].detach().numpy())
+                zhati, lami = forward_prop_alloc(p[i])
                 zhats[i] = torch.Tensor(zhati)
                 lams[i] = torch.cat((torch.Tensor(lami), torch.zeros(self.nineq - len(lami))))
                 slacks[i] = torch.Tensor(-(Gi@zhati - hi))
+                # Q[i] = torch.diag(torch.Tensor(-0.1 / zhati))
 
             self.vals = torch.Tensor(nBatch).type_as(Q)
             self.lams = lams
